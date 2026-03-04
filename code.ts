@@ -1,46 +1,42 @@
-// code.ts — Multi-section binding + 2 modes + optional SINGLE global log panel
-// Log panel is placed LEFT of the lowest common ancestor Section (LCA) that contains all selected language sections.
-// The log explicitly lists every binding: <Section>/<Frame>/<Layer> -> <Variable name>
+// code.ts — Multi-section binding + optional SINGLE global log panel
+// ALWAYS uses search-based binding (no strict Body/Text mode anymore)
+// + UI: removed mode selector, only Logging toggle + Run + Generate missing locales
 //
-// Supports up to 3 description variables per screenshot in BOTH formats:
-// - description_01 / description_02 / description_03
-// - description_1  / description_2  / description_3
-// - description (legacy, treated as description_1)
+// Generate missing locales:
+// - Uses FIRST selected language Section as template
+// - Finds all locale keys from variables (heuristic: has screenshot_01/title)
+// - Finds which locale Sections already exist among template's siblings
+// - Clones template for each missing locale key, places clones below, renames to locale key
+// - Binds variables inside each clone using the same search-based method
 //
-// Layout layers supported:
-// - Title_var
-// - Description_var (treated as description #1)
-// - Description_var_1, Description_var_2, Description_var_3
-//
-// Modes:
-// 1) Strict structure: Screenshot frame -> Body (direct child) -> Text (direct child) -> layers (direct children of Text)
-// 2) Find by node names: searches inside screenshot frame (subtree) for the layer names
-//
-// Selection:
-// - Select multiple Sections (or any nodes inside them). Plugin processes each unique language Section from the snapshot selection.
+// Logging:
+// - Single global log panel placed LEFT of the lowest common ancestor Section of the originally selected sections
+// - Log lists every binding: <Section>/<Frame>/<Layer> -> <Variable name>
 //
 // Variables:
-// - Local STRING variables, names split by "/" and last segments include:
+// - Local STRING variables, names split by "/" and last 3 segments include:
 //   .../<localizationKey>/<screenshot_01>/<field>
 //
-// Optional variable root filtering:
-// - Set ROOT_SEGMENT if you need to only consider variables under a certain segment in their name (e.g. "Collection").
-// - Default is disabled.
+// Supported fields:
+// - title
+// - description (legacy => description #1)
+// - description_1..3
+// - description_01..03
+//
+// Supported layer names in layout (case-insensitive, tolerant to spaces/dashes):
+// - Title_var
+// - Description_var (=> description #1)
+// - Description_var_1, Description_var_2, Description_var_3
 
-// ---------------- settings ----------------
-
-type Mode = "structure" | "names";
 interface Settings {
-  mode: Mode;
   logging: boolean;
 }
 
-const SETTINGS_KEY = "bind_settings_v9";
-const ROOT_SEGMENT = ""; // e.g. "Collection"; set "" to disable
-
+const SETTINGS_KEY = "bind_settings_v11";
+const ROOT_SEGMENT = ""; // e.g. "Collection"; set "" to disable filtering
 const MAX_DESC = 3;
 
-// Global log panel sizes (left of anchor section)
+// Log panel sizes (LEFT of anchor section)
 const LOG_PANEL_WIDTH = 520;
 const LOG_TEXT_WIDTH = 480;
 const LOG_PAD = 20;
@@ -50,7 +46,10 @@ const GLOBAL_LOG_PANEL_ID_KEY = "global_bind_log_panel_id";
 const GLOBAL_LOG_PANEL_NAME = "__bind_global_log_panel__";
 const GLOBAL_LOG_TEXT_NAME = "__bind_global_log_text__";
 
-// Snapshot selection at plugin start (critical: selection can change while UI is open)
+// Clone placement
+const CLONE_GAP_Y = 120;
+
+// Snapshot selection at plugin start (selection can change while UI is open)
 const selectionSnapshotIds: string[] = figma.currentPage.selection.map((n) => n.id);
 
 // ---------------- UI ----------------
@@ -72,7 +71,7 @@ const UI_HTML = `
     label { display: block; margin: 8px 0; }
     button { padding: 8px 10px; }
     .muted { color: #6b7280; margin-top: 2px; }
-    .actions { display: flex; gap: 8px; margin-top: 12px; }
+    .actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
     .status { margin-top: 10px; white-space: pre-wrap; }
   </style>
 </head>
@@ -110,20 +109,6 @@ const UI_HTML = `
   </div>
 
   <div class="row box">
-    <div><b>Binding mode</b></div>
-    <label>
-      <input type="radio" name="mode" value="structure" checked />
-      Strict structure (Body → Text)
-      <div class="muted">Body/Text must exist as direct children. Layers must be direct children of Body/Text.</div>
-    </label>
-    <label>
-      <input type="radio" name="mode" value="names" />
-      Find by node names
-      <div class="muted">Searches anywhere inside each screenshot frame for the expected layer names.</div>
-    </label>
-  </div>
-
-  <div class="row box">
     <label>
       <input id="logging" type="checkbox" checked />
       Create/update a single global log panel
@@ -133,6 +118,7 @@ const UI_HTML = `
 
   <div class="actions">
     <button id="run">Run</button>
+    <button id="gen">Generate missing locales</button>
     <button id="cancel">Cancel</button>
   </div>
 
@@ -142,26 +128,32 @@ const UI_HTML = `
     const statusEl = document.getElementById('status');
     const logEl = document.getElementById('logging');
     const runBtn = document.getElementById('run');
+    const genBtn = document.getElementById('gen');
 
-    function getMode() {
-      const checked = document.querySelector('input[name="mode"]:checked');
-      return checked ? checked.value : 'structure';
-    }
-    function setMode(mode) {
-      const el = document.querySelector('input[name="mode"][value="' + mode + '"]');
-      if (el) el.checked = true;
-    }
     function setSettings(s) {
-      if (s && s.mode) setMode(s.mode);
       if (s && typeof s.logging === 'boolean') logEl.checked = s.logging;
     }
 
+    function disableButtons(disabled) {
+      runBtn.disabled = disabled;
+      genBtn.disabled = disabled;
+    }
+
     runBtn.onclick = () => {
-      runBtn.disabled = true;
+      disableButtons(true);
       statusEl.textContent = 'Running...';
       parent.postMessage({ pluginMessage: {
         type: 'RUN',
-        settings: { mode: getMode(), logging: !!logEl.checked }
+        settings: { logging: !!logEl.checked }
+      }}, '*');
+    };
+
+    genBtn.onclick = () => {
+      disableButtons(true);
+      statusEl.textContent = 'Generating missing locales...';
+      parent.postMessage({ pluginMessage: {
+        type: 'GEN',
+        settings: { logging: !!logEl.checked }
       }}, '*');
     };
 
@@ -176,7 +168,7 @@ const UI_HTML = `
       if (msg.type === 'INIT') setSettings(msg.settings);
 
       if (msg.type === 'ERROR') {
-        runBtn.disabled = false;
+        disableButtons(false);
         statusEl.textContent = 'Error:\\n' + String(msg.message || msg.error || 'Unknown error');
       }
 
@@ -189,17 +181,14 @@ const UI_HTML = `
 </html>
 `;
 
-figma.showUI(UI_HTML, { width: 520, height: 780 });
+figma.showUI(UI_HTML, { width: 520, height: 740 });
 
 (async () => {
   const saved = (await figma.clientStorage.getAsync(SETTINGS_KEY)) as Settings | undefined;
-  const settings: Settings = {
-    mode: saved?.mode ?? "structure",
-    logging: typeof saved?.logging === "boolean" ? saved.logging : true,
-  };
+  const settings: Settings = { logging: typeof saved?.logging === "boolean" ? saved.logging : true };
   figma.ui.postMessage({ type: "INIT", settings });
 })().catch(() => {
-  figma.ui.postMessage({ type: "INIT", settings: { mode: "structure", logging: true } });
+  figma.ui.postMessage({ type: "INIT", settings: { logging: true } });
 });
 
 figma.ui.onmessage = async (raw: unknown) => {
@@ -209,17 +198,16 @@ figma.ui.onmessage = async (raw: unknown) => {
     figma.closePlugin();
     return;
   }
-  if (msg?.type !== "RUN") return;
 
-  const settings: Settings = {
-    mode: msg.settings?.mode === "names" ? "names" : "structure",
-    logging: !!msg.settings?.logging,
-  };
-
+  const settings: Settings = { logging: !!msg.settings?.logging };
   await figma.clientStorage.setAsync(SETTINGS_KEY, settings);
 
   try {
-    const summary = await runBinding(settings);
+    let summary = "";
+    if (msg?.type === "RUN") summary = await runBinding(settings);
+    else if (msg?.type === "GEN") summary = await generateMissingLocales(settings);
+    else return;
+
     figma.ui.postMessage({ type: "DONE", summary });
     figma.closePlugin();
   } catch (e: unknown) {
@@ -227,7 +215,7 @@ figma.ui.onmessage = async (raw: unknown) => {
   }
 };
 
-// ---------------- core helpers ----------------
+// ---------------- helpers ----------------
 
 function norm(s: string): string {
   return (s ?? "").trim().toLowerCase();
@@ -285,14 +273,19 @@ function nearestSection(node: BaseNode): SectionNode | null {
 
 async function collectSectionsFromSnapshot(ids: string[]): Promise<SectionNode[]> {
   const byId = new Map<string, SectionNode>();
+  const ordered: SectionNode[] = [];
 
   for (const id of ids) {
     const n = await figma.getNodeByIdAsync(id);
     if (!n) continue;
     const s = n.type === "SECTION" ? (n as SectionNode) : nearestSection(n);
-    if (s) byId.set(s.id, s);
+    if (!s) continue;
+    if (!byId.has(s.id)) {
+      byId.set(s.id, s);
+      ordered.push(s);
+    }
   }
-  return Array.from(byId.values());
+  return ordered;
 }
 
 function sectionAncestorChain(section: SectionNode): SectionNode[] {
@@ -311,12 +304,10 @@ function lowestCommonSection(sections: SectionNode[]): SectionNode {
   const chains = sections.map(sectionAncestorChain);
   const sets = chains.map((c) => new Set(c.map((s) => s.id)));
 
-  // iterate first chain from leaf upwards; first id present in all sets is LCA
   for (const candidate of chains[0]) {
     const ok = sets.every((st) => st.has(candidate.id));
     if (ok) return candidate;
   }
-  // fallback
   return sections[0];
 }
 
@@ -406,12 +397,11 @@ function getVariableByCandidates(
 }
 
 function variableCandidatesForDescription(descIndex: number): string[] {
-  // prefer unpadded first
   const c: string[] = [
     `description_${descIndex}`,
     `description_${pad2(descIndex)}`,
   ];
-  if (descIndex === 1) c.push("description"); // legacy
+  if (descIndex === 1) c.push("description");
   return c;
 }
 
@@ -505,7 +495,6 @@ async function bindWithFontRetry(node: TextNode, variable: Variable, ctx: string
 }
 
 async function maybePreloadCommonFonts(keyLower: string): Promise<void> {
-  // best-effort
   try { await loadFontOnce({ family: "Noto Sans", style: "Black" }); } catch {}
   try { await loadFontOnce({ family: "Noto Sans", style: "SemiBold" }); } catch {}
 
@@ -515,7 +504,7 @@ async function maybePreloadCommonFonts(keyLower: string): Promise<void> {
   }
 }
 
-// ---------------- log panel (single, global, left of anchor section) ----------------
+// ---------------- global log panel ----------------
 
 let interLoaded = false;
 async function ensureInterRegular(): Promise<void> {
@@ -546,8 +535,8 @@ function styleLogText(t: TextNode) {
 }
 
 async function getOrCreateGlobalLogPanel(): Promise<{ frame: FrameNode; text: TextNode }> {
-  // try by stored id
   const storedId = figma.currentPage.getPluginData(GLOBAL_LOG_PANEL_ID_KEY);
+
   if (storedId) {
     const n = await figma.getNodeByIdAsync(storedId);
     if (n && n.type === "FRAME") {
@@ -559,13 +548,12 @@ async function getOrCreateGlobalLogPanel(): Promise<{ frame: FrameNode; text: Te
         (x: SceneNode) => x.type === "TEXT" && (x as TextNode).name === GLOBAL_LOG_TEXT_NAME
       ) as TextNode | null;
 
+      await ensureInterRegular();
       if (!text) {
-        await ensureInterRegular();
         text = figma.createText();
         styleLogText(text);
         frame.appendChild(text);
       } else {
-        await ensureInterRegular();
         styleLogText(text);
       }
 
@@ -574,27 +562,6 @@ async function getOrCreateGlobalLogPanel(): Promise<{ frame: FrameNode; text: Te
     }
   }
 
-  // fallback: search by name (rare)
-  const existingByName = figma.currentPage.findOne(
-    (x: SceneNode) => x.type === "FRAME" && (x as FrameNode).name === GLOBAL_LOG_PANEL_NAME
-  ) as FrameNode | null;
-
-  if (existingByName) {
-    figma.currentPage.setPluginData(GLOBAL_LOG_PANEL_ID_KEY, existingByName.id);
-    const text = existingByName.findOne(
-      (x: SceneNode) => x.type === "TEXT" && (x as TextNode).name === GLOBAL_LOG_TEXT_NAME
-    ) as TextNode | null;
-
-    if (text) {
-      await ensureInterRegular();
-      styleLogFrame(existingByName);
-      styleLogText(text);
-      existingByName.resize(LOG_PANEL_WIDTH, Math.max(60, existingByName.height));
-      return { frame: existingByName, text };
-    }
-  }
-
-  // create new
   await ensureInterRegular();
 
   const frame = figma.createFrame();
@@ -620,7 +587,6 @@ async function writeGlobalLog(anchor: SectionNode, content: string): Promise<voi
   frame.y = anchor.y;
 
   text.characters = content;
-
   text.textAutoResize = "HEIGHT";
   text.resize(LOG_TEXT_WIDTH, Math.max(10, text.height));
 
@@ -628,15 +594,7 @@ async function writeGlobalLog(anchor: SectionNode, content: string): Promise<voi
   frame.resize(LOG_PANEL_WIDTH, Math.max(60, newH));
 }
 
-// ---------------- node finding ----------------
-
-function getDirectTextByLooseName(parent: ChildrenMixin, wanted: string): TextNode | null {
-  const w = normLoose(wanted);
-  for (const ch of parent.children) {
-    if (ch.type === "TEXT" && normLoose(ch.name) === w) return ch as TextNode;
-  }
-  return null;
-}
+// ---------------- node finding (ALWAYS search-based) ----------------
 
 function listDescriptionLayerNames(): string[] {
   const names: string[] = ["Description_var"];
@@ -654,7 +612,6 @@ function parseDescriptionIndexFromLayerName(nodeName: string): number {
 }
 
 function getScreenshotFrames(section: SectionNode): FrameNode[] {
-  // Prefer direct children frames. If none match, fallback to findAll in section.
   const direct = section.children.filter((n) => n.type === "FRAME") as FrameNode[];
   const directFiltered = direct.filter((f) => getIndex1to7FromAny(f.name) !== null);
   if (directFiltered.length) return directFiltered;
@@ -663,34 +620,7 @@ function getScreenshotFrames(section: SectionNode): FrameNode[] {
   return all.filter((f) => getIndex1to7FromAny(f.name) !== null);
 }
 
-function findNodesStrict(frame: FrameNode): {
-  title: TextNode | null;
-  descriptions: TextNode[];
-  missingContainer?: string;
-} {
-  const body = frame.children.find((n) => norm(n.name) === "body") as SceneNode | undefined;
-  if (!body || !(body as any).children) return { title: null, descriptions: [], missingContainer: "Body" };
-
-  const textContainer = (body as ChildrenMixin).children.find((n) => norm(n.name) === "text") as SceneNode | undefined;
-  if (!textContainer || !(textContainer as any).children) return { title: null, descriptions: [], missingContainer: "Body/Text" };
-
-  const textChildren = textContainer as ChildrenMixin;
-
-  const title = getDirectTextByLooseName(textChildren, "Title_var");
-
-  const descriptions: TextNode[] = [];
-  for (const name of listDescriptionLayerNames()) {
-    const n = getDirectTextByLooseName(textChildren, name);
-    if (n) descriptions.push(n);
-  }
-
-  return { title, descriptions };
-}
-
-function findNodesBySearch(frame: FrameNode): {
-  title: TextNode | null;
-  descriptions: TextNode[];
-} {
+function findNodesBySearch(frame: FrameNode): { title: TextNode | null; descriptions: TextNode[] } {
   const titleWanted = normLoose("Title_var");
   const title = frame.findOne(
     (n: SceneNode) => n.type === "TEXT" && normLoose((n as TextNode).name) === titleWanted
@@ -710,12 +640,7 @@ function findNodesBySearch(frame: FrameNode): {
 
 // ---------------- binding + reporting ----------------
 
-type BindRecord = {
-  section: string;
-  frame: string;
-  layer: string;
-  variable: string;
-};
+type BindRecord = { section: string; frame: string; layer: string; variable: string };
 
 type SectionResult = {
   sectionName: string;
@@ -727,13 +652,16 @@ type SectionResult = {
   errors: string[];
 };
 
-async function processLanguageSection(
+async function bindLanguageSection(
   section: SectionNode,
-  settings: Settings,
-  global: GlobalVarIndex
+  global: GlobalVarIndex,
+  forcedKey?: { keyLower: string; keyRaw: string }
 ): Promise<SectionResult> {
   const sectionName = (section.name ?? "").trim();
-  const detected = detectKeyForSection(sectionName, global.keyLowerToRaw);
+
+  const detected = forcedKey
+    ? { keyLower: forcedKey.keyLower, keyRaw: forcedKey.keyRaw }
+    : detectKeyForSection(sectionName, global.keyLowerToRaw);
 
   const res: SectionResult = {
     sectionName,
@@ -758,48 +686,30 @@ async function processLanguageSection(
     const shotIdx = getIndex1to7FromAny(frame.name);
     if (!shotIdx) continue;
 
-    let titleNode: TextNode | null = null;
-    let descNodes: TextNode[] = [];
-    let missingContainer: string | undefined;
+    const found = findNodesBySearch(frame);
 
-    if (settings.mode === "structure") {
-      const r = findNodesStrict(frame);
-      titleNode = r.title;
-      descNodes = r.descriptions;
-      missingContainer = r.missingContainer;
-    } else {
-      const r = findNodesBySearch(frame);
-      titleNode = r.title;
-      descNodes = r.descriptions;
-    }
-
-    if (missingContainer) {
-      res.warnings.push(`[${sectionName}] ${frame.name}: missing ${missingContainer}`);
-      continue; // strict mode cannot proceed for this frame
-    }
-
-    // ---- TITLE ----
+    // Title
     {
       const { variable: vTitle } = getVariableByCandidates(global.index, detected.keyLower, shotIdx, ["title"]);
-      if (titleNode && vTitle) {
-        if (titleNode.locked) res.warnings.push(`[${sectionName}] ${frame.name}: Title_var is locked`);
-        else if (isInsideInstance(titleNode)) res.warnings.push(`[${sectionName}] ${frame.name}: Title_var is inside instance`);
+      if (found.title && vTitle) {
+        if (found.title.locked) res.warnings.push(`[${sectionName}] ${frame.name}: Title_var is locked`);
+        else if (isInsideInstance(found.title)) res.warnings.push(`[${sectionName}] ${frame.name}: Title_var is inside instance`);
         else {
-          const ok = await bindWithFontRetry(titleNode, vTitle, `[${sectionName}] ${frame.name}: Title_var`, res.errors);
+          const ok = await bindWithFontRetry(found.title, vTitle, `[${sectionName}] ${frame.name}: Title_var`, res.errors);
           if (ok) {
             res.bound++;
-            res.binds.push({ section: sectionName, frame: frame.name, layer: titleNode.name, variable: vTitle.name });
+            res.binds.push({ section: sectionName, frame: frame.name, layer: found.title.name, variable: vTitle.name });
           }
         }
       } else {
-        if (!titleNode) res.warnings.push(`[${sectionName}] ${frame.name}: missing Title_var`);
+        if (!found.title) res.warnings.push(`[${sectionName}] ${frame.name}: missing Title_var`);
         if (!vTitle) res.warnings.push(`[${sectionName}] ${frame.name}: missing variable ${detected.keyRaw}/screenshot_${pad2(shotIdx)}/title`);
       }
     }
 
-    // ---- DESCRIPTIONS ----
+    // Descriptions
     const descMap = new Map<number, TextNode[]>();
-    for (const n of descNodes) {
+    for (const n of found.descriptions) {
       const di = parseDescriptionIndexFromLayerName(n.name);
       const arr = descMap.get(di) ?? [];
       arr.push(n);
@@ -808,7 +718,7 @@ async function processLanguageSection(
 
     for (let di = 1; di <= MAX_DESC; di++) {
       const nodesForThis = descMap.get(di) ?? [];
-      if (nodesForThis.length === 0) continue; // no layer -> skip
+      if (nodesForThis.length === 0) continue;
 
       const { variable, usedFieldLower } = getVariableByCandidates(global.index, detected.keyLower, shotIdx, variableCandidatesForDescription(di));
       if (!variable) {
@@ -827,6 +737,7 @@ async function processLanguageSection(
           res.warnings.push(`[${sectionName}] ${frame.name}: ${node.name} is inside instance`);
           continue;
         }
+
         const ctx = `[${sectionName}] ${frame.name}: ${node.name} -> ${usedFieldLower ?? "description"}`;
         const ok = await bindWithFontRetry(node, variable, ctx, res.errors);
         if (ok) {
@@ -840,29 +751,188 @@ async function processLanguageSection(
   return res;
 }
 
-// ---------------- main run ----------------
+// ---------------- RUN ----------------
 
 async function runBinding(settings: Settings): Promise<string> {
   const languageSections = await collectSectionsFromSnapshot(selectionSnapshotIds);
-  if (languageSections.length === 0) {
-    throw new Error("No Sections found in the selection snapshot. Select one or more Sections (or nodes inside them), then run the plugin.");
-  }
+  if (languageSections.length === 0) throw new Error("No Sections found in the selection snapshot.");
 
   const anchor = lowestCommonSection(languageSections);
   const global = await buildGlobalVarIndex();
 
   const results: SectionResult[] = [];
-  for (const sec of languageSections) {
-    results.push(await processLanguageSection(sec, settings, global));
-  }
+  for (const sec of languageSections) results.push(await bindLanguageSection(sec, global));
 
   const totalBound = results.reduce((s, r) => s + r.bound, 0);
   const processed = results.filter((r) => r.keyRaw).length;
   const missingKey = results.filter((r) => !r.keyRaw).length;
 
-  // Build detailed log (bindings first)
+  const logText = buildGlobalLogText({
+    title: "Global Bind Log",
+    anchorName: anchor.name,
+    selectedSectionsCount: languageSections.length,
+    processed,
+    missingKey,
+    totalBound,
+    results,
+    extraBlocks: [],
+  });
+
+  if (settings.logging) await writeGlobalLog(anchor, logText);
+
+  figma.notify(`Bound: ${totalBound} | Sections: ${languageSections.length}`, { timeout: 8000 });
+
+  return `Selected sections: ${languageSections.length}\nProcessed: ${processed}\nMissing key: ${missingKey}\nTotal bound: ${totalBound}`;
+}
+
+// ---------------- GEN: generate missing locales ----------------
+
+function isChildrenParent(n: BaseNode | null): n is BaseNode & ChildrenMixin {
+  return !!n && (n as any).children !== undefined && typeof (n as any).appendChild === "function";
+}
+
+function sortKeysByRaw(keyLowers: string[], keyLowerToRaw: Map<string, string>): string[] {
+  return keyLowers
+    .slice()
+    .sort((a, b) => (keyLowerToRaw.get(a) ?? a).localeCompare(keyLowerToRaw.get(b) ?? b));
+}
+
+function localeKeysWithAnyContent(global: GlobalVarIndex): string[] {
+  // Heuristic: locale key is valid if it has screenshot_01/title
+  const keys: string[] = [];
+  for (const keyLower of global.keyLowerToRaw.keys()) {
+    if (global.index.has(makeIndexKey(keyLower, 1, "title"))) keys.push(keyLower);
+  }
+  return keys;
+}
+
+function presentLocaleKeysAmongSiblings(parent: BaseNode & ChildrenMixin, global: GlobalVarIndex): Set<string> {
+  const present = new Set<string>();
+  for (const ch of parent.children) {
+    if (ch.type !== "SECTION") continue;
+    const s = ch as SectionNode;
+    const det = detectKeyForSection(s.name ?? "", global.keyLowerToRaw);
+    if (det.keyLower) present.add(det.keyLower);
+  }
+  return present;
+}
+
+async function generateMissingLocales(settings: Settings): Promise<string> {
+  const selectedLanguageSections = await collectSectionsFromSnapshot(selectionSnapshotIds);
+  if (selectedLanguageSections.length === 0) throw new Error("No Sections found in the selection snapshot.");
+
+  const anchor = lowestCommonSection(selectedLanguageSections);
+  const global = await buildGlobalVarIndex();
+
+  const template = selectedLanguageSections[0];
+  if (!isChildrenParent(template.parent)) throw new Error("Template section has no valid parent container.");
+
+  const parent = template.parent;
+
+  const allLocaleKeys = localeKeysWithAnyContent(global);
+  const presentKeys = presentLocaleKeysAmongSiblings(parent, global);
+
+  // also count template
+  const templateDet = detectKeyForSection(template.name ?? "", global.keyLowerToRaw);
+  if (templateDet.keyLower) presentKeys.add(templateDet.keyLower);
+
+  const missing = allLocaleKeys.filter((k) => !presentKeys.has(k));
+  const missingSorted = sortKeysByRaw(missing, global.keyLowerToRaw);
+
+  if (missingSorted.length === 0) {
+    const logText = buildGlobalLogText({
+      title: "Global Log (Generate Missing Locales)",
+      anchorName: anchor.name,
+      selectedSectionsCount: selectedLanguageSections.length,
+      processed: 0,
+      missingKey: 0,
+      totalBound: 0,
+      results: [],
+      extraBlocks: [
+        `Generate missing locales:\n(none) — all locales already exist next to the selected section.`,
+      ],
+    });
+    if (settings.logging) await writeGlobalLog(anchor, logText);
+    figma.notify("No missing locales found.", { timeout: 5000 });
+    return "No missing locales found.";
+  }
+
+  // Create clones below template
+  let nextY = template.y + template.height + CLONE_GAP_Y;
+
+  const createdSections: SectionNode[] = [];
+  const results: SectionResult[] = [];
+
+  for (const keyLower of missingSorted) {
+    const keyRaw = global.keyLowerToRaw.get(keyLower) ?? keyLower;
+
+    const cloneNode = template.clone();
+    if (cloneNode.type !== "SECTION") {
+      cloneNode.remove();
+      continue;
+    }
+
+    const clone = cloneNode as SectionNode;
+    clone.name = keyRaw;
+
+    parent.appendChild(clone);
+
+    clone.x = template.x;
+    clone.y = nextY;
+    nextY += clone.height + CLONE_GAP_Y;
+
+    createdSections.push(clone);
+
+    // Bind clone with forced key
+    const r = await bindLanguageSection(clone, global, { keyLower, keyRaw });
+    results.push(r);
+  }
+
+  const totalBound = results.reduce((s, r) => s + r.bound, 0);
+
+  const extraBlocks: string[] = [
+    `Generate missing locales:\nTemplate: ${template.name}\nCreated sections: ${createdSections.length}\nCreated locales:\n${
+      createdSections.map((s) => `- ${s.name}`).join("\n")
+    }`,
+  ];
+
+  const logText = buildGlobalLogText({
+    title: "Global Log (Generate Missing Locales)",
+    anchorName: anchor.name,
+    selectedSectionsCount: selectedLanguageSections.length,
+    processed: createdSections.length,
+    missingKey: 0,
+    totalBound,
+    results,
+    extraBlocks,
+  });
+
+  if (settings.logging) await writeGlobalLog(anchor, logText);
+
+  figma.notify(`Created: ${createdSections.length} | Bound: ${totalBound}`, { timeout: 8000 });
+
+  return `Created sections: ${createdSections.length}\nTotal bound in new sections: ${totalBound}`;
+}
+
+// ---------------- log text builder ----------------
+
+function buildGlobalLogText(args: {
+  title: string;
+  anchorName: string;
+  selectedSectionsCount: number;
+  processed: number;
+  missingKey: number;
+  totalBound: number;
+  results: SectionResult[];
+  extraBlocks: string[];
+}): string {
+  const perSectionSummary = args.results.map((r) => {
+    const key = r.keyRaw ? r.keyRaw : "NOT FOUND";
+    return `${r.sectionName} (key: ${key}) — bound ${r.bound}`;
+  });
+
   const bindLines: string[] = [];
-  for (const r of results) {
+  for (const r of args.results) {
     for (const b of r.binds) {
       bindLines.push(`${b.section} / ${b.frame} / ${b.layer} -> ${b.variable}`);
     }
@@ -870,39 +940,24 @@ async function runBinding(settings: Settings): Promise<string> {
 
   const warningLines: string[] = [];
   const errorLines: string[] = [];
-  for (const r of results) {
+  for (const r of args.results) {
     for (const w of r.warnings) warningLines.push(w);
     for (const e of r.errors) errorLines.push(e);
   }
 
-  const perSectionSummary = results.map((r) => {
-    const key = r.keyRaw ? r.keyRaw : "NOT FOUND";
-    return `${r.sectionName} (key: ${key}) — bound ${r.bound}`;
-  });
+  const extras = args.extraBlocks.length ? args.extraBlocks.join("\n\n") + "\n\n" : "";
 
-  const logText =
-    `Global Bind Log\n` +
-    `Anchor section: ${anchor.name}\n` +
-    `Selected sections: ${languageSections.length}\n` +
-    `Processed: ${processed}\n` +
-    `Missing key: ${missingKey}\n` +
-    `Total bound: ${totalBound}\n\n` +
-    `Per-section summary:\n${perSectionSummary.join("\n")}\n\n` +
+  return (
+    `${args.title}\n` +
+    `Anchor section: ${args.anchorName}\n` +
+    `Selected sections: ${args.selectedSectionsCount}\n` +
+    `Processed: ${args.processed}\n` +
+    `Missing key: ${args.missingKey}\n` +
+    `Total bound: ${args.totalBound}\n\n` +
+    extras +
+    `Per-section summary:\n${perSectionSummary.length ? perSectionSummary.join("\n") : "(none)"}\n\n` +
     `Bindings:\n${bindLines.length ? bindLines.join("\n") : "(none)"}\n\n` +
     `Warnings:\n${warningLines.length ? warningLines.join("\n") : "(none)"}\n\n` +
-    `Errors:\n${errorLines.length ? errorLines.join("\n") : "(none)"}`;
-
-  if (settings.logging) {
-    await writeGlobalLog(anchor, logText);
-  }
-
-  figma.notify(`Bound: ${totalBound} | Sections: ${languageSections.length}`, { timeout: 8000 });
-
-  // Return a compact UI summary
-  const summary =
-    `Selected sections: ${languageSections.length}\n` +
-    `Processed: ${processed}\n` +
-    `Missing key: ${missingKey}\n` +
-    `Total bound: ${totalBound}`;
-  return summary;
+    `Errors:\n${errorLines.length ? errorLines.join("\n") : "(none)"}`
+  );
 }
