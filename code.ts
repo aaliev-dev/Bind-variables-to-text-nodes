@@ -1,16 +1,13 @@
 // code.ts — Multi-section binding + optional SINGLE global log panel
-// ALWAYS uses search-based binding (no strict Body/Text mode anymore)
-// + UI: removed mode selector, only Logging toggle + Run + Generate missing locales
+// UI: "Bind" + "Generate missing locales" + Logging toggle
+// ALWAYS uses search-based binding (no strict structure mode)
 //
-// Generate missing locales:
-// - Uses FIRST selected language Section as template
-// - Finds all locale keys from variables (heuristic: has screenshot_01/title)
-// - Finds which locale Sections already exist among template's siblings
-// - Clones template for each missing locale key, places clones below, renames to locale key
-// - Binds variables inside each clone using the same search-based method
+// RTL tweak:
+// - If locale key starts with "ar" or "he" (case-insensitive), then after binding:
+//   - Title_var + all Description_* nodes get textAlignHorizontal = "RIGHT"
 //
-// Logging:
-// - Single global log panel placed LEFT of the lowest common ancestor Section of the originally selected sections
+// Log:
+// - Single global log panel placed LEFT of the lowest common ancestor Section (LCA) of the originally selected sections
 // - Log lists every binding: <Section>/<Frame>/<Layer> -> <Variable name>
 //
 // Variables:
@@ -32,7 +29,7 @@ interface Settings {
   logging: boolean;
 }
 
-const SETTINGS_KEY = "bind_settings_v11";
+const SETTINGS_KEY = "bind_settings_v12";
 const ROOT_SEGMENT = ""; // e.g. "Collection"; set "" to disable filtering
 const MAX_DESC = 3;
 
@@ -117,7 +114,7 @@ const UI_HTML = `
   </div>
 
   <div class="actions">
-    <button id="run">Run</button>
+    <button id="bind">Bind</button>
     <button id="gen">Generate missing locales</button>
     <button id="cancel">Cancel</button>
   </div>
@@ -127,7 +124,7 @@ const UI_HTML = `
   <script>
     const statusEl = document.getElementById('status');
     const logEl = document.getElementById('logging');
-    const runBtn = document.getElementById('run');
+    const bindBtn = document.getElementById('bind');
     const genBtn = document.getElementById('gen');
 
     function setSettings(s) {
@@ -135,15 +132,15 @@ const UI_HTML = `
     }
 
     function disableButtons(disabled) {
-      runBtn.disabled = disabled;
+      bindBtn.disabled = disabled;
       genBtn.disabled = disabled;
     }
 
-    runBtn.onclick = () => {
+    bindBtn.onclick = () => {
       disableButtons(true);
-      statusEl.textContent = 'Running...';
+      statusEl.textContent = 'Binding...';
       parent.postMessage({ pluginMessage: {
-        type: 'RUN',
+        type: 'BIND',
         settings: { logging: !!logEl.checked }
       }}, '*');
     };
@@ -204,7 +201,7 @@ figma.ui.onmessage = async (raw: unknown) => {
 
   try {
     let summary = "";
-    if (msg?.type === "RUN") summary = await runBinding(settings);
+    if (msg?.type === "BIND") summary = await runBinding(settings);
     else if (msg?.type === "GEN") summary = await generateMissingLocales(settings);
     else return;
 
@@ -258,6 +255,11 @@ function isInsideInstance(node: BaseNode): boolean {
     cur = cur.parent;
   }
   return false;
+}
+
+function isRTLKey(keyLower: string): boolean {
+  // simple heuristic: Arabic/Hebrew locale prefixes
+  return keyLower.startsWith("ar") || keyLower.startsWith("he");
 }
 
 // ---------------- selection -> sections + LCA ----------------
@@ -638,6 +640,18 @@ function findNodesBySearch(frame: FrameNode): { title: TextNode | null; descript
   return { title, descriptions };
 }
 
+// ---------------- RTL alignment ----------------
+
+function tryApplyRTLAlignment(node: TextNode, rtl: boolean, warnings: string[], ctx: string) {
+  if (!rtl) return;
+  try {
+    node.textAlignHorizontal = "RIGHT";
+  } catch (e: unknown) {
+    // Some cases may throw (rare). We keep it non-fatal.
+    warnings.push(`${ctx}: failed to set textAlignHorizontal=RIGHT (${String((e as any)?.message ?? e)})`);
+  }
+}
+
 // ---------------- binding + reporting ----------------
 
 type BindRecord = { section: string; frame: string; layer: string; variable: string };
@@ -678,6 +692,8 @@ async function bindLanguageSection(
     return res;
   }
 
+  const rtl = isRTLKey(detected.keyLower);
+
   await maybePreloadCommonFonts(detected.keyLower);
 
   const frames = getScreenshotFrames(section);
@@ -697,6 +713,7 @@ async function bindLanguageSection(
         else {
           const ok = await bindWithFontRetry(found.title, vTitle, `[${sectionName}] ${frame.name}: Title_var`, res.errors);
           if (ok) {
+            tryApplyRTLAlignment(found.title, rtl, res.warnings, `[${sectionName}] ${frame.name}: Title_var`);
             res.bound++;
             res.binds.push({ section: sectionName, frame: frame.name, layer: found.title.name, variable: vTitle.name });
           }
@@ -741,6 +758,7 @@ async function bindLanguageSection(
         const ctx = `[${sectionName}] ${frame.name}: ${node.name} -> ${usedFieldLower ?? "description"}`;
         const ok = await bindWithFontRetry(node, variable, ctx, res.errors);
         if (ok) {
+          tryApplyRTLAlignment(node, rtl, res.warnings, `[${sectionName}] ${frame.name}: ${node.name}`);
           res.bound++;
           res.binds.push({ section: sectionName, frame: frame.name, layer: node.name, variable: variable.name });
         }
@@ -751,7 +769,7 @@ async function bindLanguageSection(
   return res;
 }
 
-// ---------------- RUN ----------------
+// ---------------- BIND ----------------
 
 async function runBinding(settings: Settings): Promise<string> {
   const languageSections = await collectSectionsFromSnapshot(selectionSnapshotIds);
@@ -832,7 +850,6 @@ async function generateMissingLocales(settings: Settings): Promise<string> {
   const allLocaleKeys = localeKeysWithAnyContent(global);
   const presentKeys = presentLocaleKeysAmongSiblings(parent, global);
 
-  // also count template
   const templateDet = detectKeyForSection(template.name ?? "", global.keyLowerToRaw);
   if (templateDet.keyLower) presentKeys.add(templateDet.keyLower);
 
@@ -857,7 +874,6 @@ async function generateMissingLocales(settings: Settings): Promise<string> {
     return "No missing locales found.";
   }
 
-  // Create clones below template
   let nextY = template.y + template.height + CLONE_GAP_Y;
 
   const createdSections: SectionNode[] = [];
@@ -883,7 +899,6 @@ async function generateMissingLocales(settings: Settings): Promise<string> {
 
     createdSections.push(clone);
 
-    // Bind clone with forced key
     const r = await bindLanguageSection(clone, global, { keyLower, keyRaw });
     results.push(r);
   }
