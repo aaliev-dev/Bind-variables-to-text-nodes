@@ -1,40 +1,29 @@
-Below are the steps to get your plugin running. You can also find instructions at:
+Generate locales for store screens
 
-  https://www.figma.com/plugin-docs/plugin-quickstart-guide/
+Generate screens or bind variables to frames in one click
 
-This plugin template uses Typescript and NPM, two standard tools in creating JavaScript applications.
 
-First, download Node.js which comes with NPM. This will allow you to install TypeScript and other
-libraries. You can find the download link here:
+Description:
+Generate screens based on your variables or bind Variables to Text nodes automatically.
 
-  https://nodejs.org/en/download/
+How it works:
 
-Next, install TypeScript using the command:
+Select a Section or any sections and run the plugin.
 
-  npm install -g typescript
+The plugin detects the language from the Section name (e.g. en-US, fr-FR-CA, ar-SA).
 
-Finally, in the directory of your plugin, get the latest type definitions for the plugin API by running:
+It scans frames _01_ to _07_ inside the Section.
 
-  npm install --save-dev @figma/plugin-typings
+For each frame, it finds Title_var and description_var_1,2,3 and binds them to the matching String Variables.
 
-If you are familiar with JavaScript, TypeScript will look very familiar. In fact, valid JavaScript code
-is already valid Typescript code.
+Expected structure and naming:
 
-TypeScript adds type annotations to variables. This allows code editors such as Visual Studio Code
-to provide information about the Figma API while you are writing code, as well as help catch bugs
-you previously didn't notice.
+Section name contains the language code.
 
-For more information, visit https://www.typescriptlang.org/
+Frame names contain the screenshot index 1..7 (e.g. _01_, _02_).
 
-Using TypeScript requires a compiler to convert TypeScript (code.ts) into JavaScript (code.js)
-for the browser to run.
+Inside frame: Title_var and Description_var_1,2,3 (case-insensitive).
 
-We recommend writing TypeScript code using Visual Studio code:
+Variables organised like this example: https://github.com/aaliev-dev/ScreenshotLocalisationTemplate/blob/main/ScreenshotLocalisationTemplate.json
 
-1. Download Visual Studio Code if you haven't already: https://code.visualstudio.com/.
-2. Open this directory in Visual Studio Code.
-3. Compile TypeScript to JavaScript: Run the "Terminal > Run Build Task..." menu item,
-    then select "npm: watch". You will have to do this again every time
-    you reopen Visual Studio Code.
-
-That's it! Visual Studio Code will regenerate the JavaScript file every time you save.
+Keywords: variables, localization, i18n, app store screenshots, play store screenshots, copy, string tokens, automation
