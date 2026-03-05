@@ -1,5 +1,7 @@
 # Bind-variables-to-text-nodes (Figma Plugin)
 
+Figma link: https://www.figma.com/community/plugin/1610698594598742759/generate-locales-for-store-screens
+
 Generate and bind localized store screenshots from Figma Variables, without playing “hunt the text layer” for every language.
 
 This plugin helps you do two things:
